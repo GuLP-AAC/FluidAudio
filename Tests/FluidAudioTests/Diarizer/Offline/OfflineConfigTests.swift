@@ -61,4 +61,29 @@ final class OfflineConfigTests: XCTestCase {
         let config = OfflineDiarizerConfig.default.withSpeakers(exactly: 3)
         XCTAssertEqual(config.clustering.numSpeakers, 3)
     }
+
+    func testSegmentationBatchSizeDefaultsTo32() {
+        XCTAssertEqual(OfflineDiarizerConfig.Segmentation.community.batchSize, 32)
+        XCTAssertEqual(OfflineDiarizerConfig.default.segmentation.batchSize, 32)
+    }
+
+    func testSegmentationBatchSizeIsSettable() {
+        var config = OfflineDiarizerConfig()
+        config.segmentation.batchSize = 4
+        XCTAssertEqual(config.segmentation.batchSize, 4)
+    }
+
+    func testSegmentationBatchSizeClampsToOne() {
+        let segmentation = OfflineDiarizerConfig.Segmentation(
+            windowDurationSeconds: 10,
+            sampleRate: 16_000,
+            minDurationOn: 0,
+            minDurationOff: 0,
+            stepRatio: 0.2,
+            speechOnsetThreshold: 0.5,
+            speechOffsetThreshold: 0.5,
+            batchSize: 0
+        )
+        XCTAssertEqual(segmentation.batchSize, 1)
+    }
 }

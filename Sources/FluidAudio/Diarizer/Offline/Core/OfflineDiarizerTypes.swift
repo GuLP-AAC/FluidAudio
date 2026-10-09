@@ -42,6 +42,11 @@ public struct OfflineDiarizerConfig: Sendable {
         public var stepRatio: Double
         public var speechOnsetThreshold: Float
         public var speechOffsetThreshold: Float
+        /// Windows run through the segmentation model per prediction. Each window
+        /// is independent, so the output is the same at any size; smaller batches
+        /// trade a little throughput for much less Core ML working memory (about
+        /// 450 MB at 32 on the CPU, about 100 MB at 4). Clamped to at least 1.
+        public var batchSize: Int
 
         public static let community = Segmentation(
             windowDurationSeconds: 10.0,
@@ -61,7 +66,8 @@ public struct OfflineDiarizerConfig: Sendable {
             minDurationOff: Double,
             stepRatio: Double,
             speechOnsetThreshold: Float,
-            speechOffsetThreshold: Float
+            speechOffsetThreshold: Float,
+            batchSize: Int = 32
         ) {
             self.windowDurationSeconds = windowDurationSeconds
             self.sampleRate = sampleRate
@@ -70,6 +76,7 @@ public struct OfflineDiarizerConfig: Sendable {
             self.stepRatio = stepRatio
             self.speechOnsetThreshold = speechOnsetThreshold
             self.speechOffsetThreshold = speechOffsetThreshold
+            self.batchSize = max(1, batchSize)
         }
     }
 
