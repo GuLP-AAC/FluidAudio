@@ -183,10 +183,17 @@ public final class OfflineDiarizerManager {
         let segmentationResult: (SegmentationOutput, TimeInterval)
         let embeddingResult: ([TimedEmbedding], TimeInterval)
         do {
-            async let awaitedSegmentation = segmentationTask.value
-            async let awaitedEmbeddings = embeddingTask.value
-            segmentationResult = try await awaitedSegmentation
-            embeddingResult = try await awaitedEmbeddings
+            // The stages run in their own tasks, which don't inherit the caller's
+            // cancellation: pass it on, so a cancelled caller stops them between
+            // batches instead of waiting for the whole file.
+            (segmentationResult, embeddingResult) = try await withTaskCancellationHandler {
+                async let awaitedSegmentation = segmentationTask.value
+                async let awaitedEmbeddings = embeddingTask.value
+                return (try await awaitedSegmentation, try await awaitedEmbeddings)
+            } onCancel: {
+                segmentationTask.cancel()
+                embeddingTask.cancel()
+            }
         } catch {
             segmentationTask.cancel()
             embeddingTask.cancel()
