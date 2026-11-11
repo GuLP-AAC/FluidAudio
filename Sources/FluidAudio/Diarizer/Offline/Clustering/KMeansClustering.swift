@@ -8,6 +8,12 @@ import os.signpost
 struct KMeansClustering {
 
     private static let logger = AppLogger(category: "KMeansClustering")
+
+    /// GuLP fork: the seed the diarizer's speaker-count re-clustering uses, so the
+    /// same audio always splits the same way (pyannote seeds its K-Means with 42 too).
+    static let defaultSeed: UInt64 = 42
+    /// GuLP fork: k-means++ restarts for that re-clustering.
+    static let defaultRestarts = 10
     private static let signposter = OSSignposter(
         subsystem: "com.fluidaudio.diarization",
         category: .pointsOfInterest
@@ -33,6 +39,70 @@ struct KMeansClustering {
             maxIterations: maxIterations,
             seed: seed
         ).clusters
+    }
+
+    /// GuLP fork: k-means++ starts, `restarts` times, keeping the run with the
+    /// lowest inertia (sklearn's `n_init`, which pyannote uses for the same job).
+    /// One random start can settle on a split that has nothing to do with who is
+    /// speaking.
+    static func clusterWithCentroids(
+        embeddings: [[Double]],
+        numClusters: Int,
+        maxIterations: Int = 300,
+        seed: UInt64,
+        restarts: Int
+    ) -> (clusters: [Int], centroids: [[Double]]) {
+        guard restarts > 1, embeddings.count > numClusters, numClusters > 0,
+            let dimension = embeddings.first?.count, dimension > 0
+        else {
+            return clusterWithCentroids(
+                embeddings: embeddings, numClusters: numClusters, maxIterations: maxIterations, seed: seed)
+        }
+        let normalized = normalizeEmbeddings(embeddings)
+        var rng = SeededRNG(seed: seed)
+        var best: (clusters: [Int], centroids: [[Double]], inertia: Double)?
+        for _ in 0..<restarts {
+            var centroids = plusPlusCentroids(from: normalized, k: numClusters, rng: &rng)
+            var assignments = [Int](repeating: -1, count: normalized.count)
+            for _ in 0..<maxIterations {
+                let next = assignToCentroids(normalized, centroids: centroids)
+                if next == assignments { break }
+                assignments = next
+                centroids = updateCentroids(
+                    embeddings: normalized, assignments: assignments, k: numClusters, dimension: dimension, rng: &rng)
+            }
+            let inertia = zip(normalized, assignments).reduce(0.0) { total, pair in
+                total + euclideanDistanceSquared(pair.0, centroids[pair.1])
+            }
+            if best == nil || inertia < best!.inertia {
+                best = (assignments, centroids, inertia)
+            }
+        }
+        return (best!.clusters, best!.centroids)
+    }
+
+    /// k-means++: each next start is drawn in proportion to its squared distance
+    /// from the starts chosen so far.
+    private static func plusPlusCentroids(from embeddings: [[Double]], k: Int, rng: inout SeededRNG) -> [[Double]] {
+        var centroids = [embeddings[Int(rng.next() % UInt64(embeddings.count))]]
+        while centroids.count < k {
+            let distances = embeddings.map { embedding in
+                centroids.map { euclideanDistanceSquared(embedding, $0) }.min() ?? 0
+            }
+            let total = distances.reduce(0, +)
+            guard total > 0 else { break }
+            var target = Double(rng.next() % 1_000_000_007) / 1_000_000_007.0 * total
+            var chosen = distances.count - 1
+            for (index, distance) in distances.enumerated() {
+                target -= distance
+                if target <= 0 {
+                    chosen = index
+                    break
+                }
+            }
+            centroids.append(embeddings[chosen])
+        }
+        return centroids
     }
 
     /// Clusters embeddings and returns both assignments and centroids.

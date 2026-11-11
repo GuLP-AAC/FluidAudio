@@ -18,6 +18,7 @@ private struct OfflineEmbeddingPending: Sendable {
     let startTime: Double
     let endTime: Double
     let embedding256: [Float]
+    let cleanActiveRatio: Float
 
     init(
         chunkIndex: Int,
@@ -27,7 +28,8 @@ private struct OfflineEmbeddingPending: Sendable {
         frameWeights: [Float],
         startTime: Double,
         endTime: Double,
-        embedding256: [Float]
+        embedding256: [Float],
+        cleanActiveRatio: Float
     ) {
         self.chunkIndex = chunkIndex
         self.speakerIndex = speakerIndex
@@ -37,6 +39,7 @@ private struct OfflineEmbeddingPending: Sendable {
         self.startTime = startTime
         self.endTime = endTime
         self.embedding256 = embedding256
+        self.cleanActiveRatio = cleanActiveRatio
     }
 }
 
@@ -339,7 +342,8 @@ struct OfflineEmbeddingExtractor {
                     startTime: info.startTime,
                     endTime: info.endTime,
                     embedding256: info.embedding256,
-                    rho128: rho
+                    rho128: rho,
+                    cleanActiveRatio: info.cleanActiveRatio
                 )
                 embeddings.append(timedEmbedding)
             }
@@ -446,12 +450,14 @@ struct OfflineEmbeddingExtractor {
                 }
 
                 let cleanSum = VDSPOperations.sum(cleanMask)
-                let minActiveRatio: Float = 0.2
-                if cleanSum < Float(frameCount) * minActiveRatio {
-                    maskPreparationDuration += maskStart.duration(to: clock.now)
-                    emptyMaskCount += 1
-                    continue
-                }
+                // GuLP fork: pyannote's 20% clean-activity rule (`min_active_ratio`)
+                // only chooses which embeddings train the clustering; every active
+                // speaker still gets an embedding and is assigned to a cluster. Dropping
+                // them here lost every speaker who talks in short turns (a 1 s prompt
+                // in a 10 s window): they never reached clustering, and a two-voice
+                // session came back as one voice. The ratio goes with the embedding and
+                // `selectTrainingEmbeddings` applies the rule.
+                let cleanActiveRatio = cleanSum / Float(frameCount)
                 let maskToUse: [Float]
                 let maskSum: Float
                 if cleanSum >= Float(minFramesForEmbedding) {
@@ -532,7 +538,8 @@ struct OfflineEmbeddingExtractor {
                         frameWeights: maskToUse,
                         startTime: startTime,
                         endTime: endTime,
-                        embedding256: embedding256
+                        embedding256: embedding256,
+                        cleanActiveRatio: cleanActiveRatio
                     )
                 )
 

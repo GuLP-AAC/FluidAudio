@@ -238,23 +238,23 @@ public final class OfflineDiarizerManager {
             initialClusters = Array(repeating: 0, count: trainingEmbeddings.count)
         }
 
+        let hasConstraints =
+            config.clustering.numSpeakers != nil
+            || config.clustering.minSpeakers != nil
+            || config.clustering.maxSpeakers != nil
+
+        let constraints: SpeakerCountConstraints? =
+            hasConstraints && !trainingEmbeddings.isEmpty
+            ? SpeakerCountConstraints.resolve(
+                numEmbeddings: trainingEmbeddings.count,
+                numSpeakers: config.clustering.numSpeakers,
+                minSpeakers: config.clustering.minSpeakers,
+                maxSpeakers: config.clustering.maxSpeakers
+            )
+            : nil
+
         let vbxOutput: VBxOutput
         if !trainingRho.isEmpty, !initialClusters.isEmpty {
-            let hasConstraints =
-                config.clustering.numSpeakers != nil
-                || config.clustering.minSpeakers != nil
-                || config.clustering.maxSpeakers != nil
-
-            let constraints: SpeakerCountConstraints? =
-                hasConstraints
-                ? SpeakerCountConstraints.resolve(
-                    numEmbeddings: trainingEmbeddings.count,
-                    numSpeakers: config.clustering.numSpeakers,
-                    minSpeakers: config.clustering.minSpeakers,
-                    maxSpeakers: config.clustering.maxSpeakers
-                )
-                : nil
-
             vbxOutput = VBxClustering(config: config, pldaTransform: pldaTransform).refineWithConstraints(
                 rhoFeatures: trainingRho,
                 trainingEmbeddings: trainingEmbeddings,
@@ -281,17 +281,60 @@ public final class OfflineDiarizerManager {
         if centroids.isEmpty {
             centroids = computeFallbackCentroids(from: embeddingFeatures)
         }
-        let assignments = assignEmbeddings(
+        var assignments = assignEmbeddings(
             embeddingFeatures: embeddingFeatures,
             centroids: centroids
         )
 
-        let chunkAssignments = buildChunkAssignments(
+        let reconstruction = OfflineReconstruction(config: config)
+        var segments = reconstruction.buildSegments(
             segmentation: segmentation,
-            timedEmbeddings: timedEmbeddings,
-            assignments: assignments,
-            clusterCount: centroids.count
+            hardClusters: buildChunkAssignments(
+                segmentation: segmentation,
+                timedEmbeddings: timedEmbeddings,
+                assignments: assignments,
+                clusterCount: centroids.count
+            ),
+            centroids: centroids
         )
+
+        // GuLP fork: the speaker-count floor is checked against the clusters VBx
+        // starts from, not the voices it ends with. VBx can fold one speaker into
+        // another (its weight drops below the centroid cutoff) or leave it so few
+        // embeddings that it never wins a frame, and the output then has fewer
+        // voices than `minSpeakers` although the check passed. Enforce the floor on
+        // the output: re-cluster to `minSpeakers` with seeded K-Means.
+        let outputSpeakers = Set(segments.map(\.speakerId)).count
+        if let constraints,
+            outputSpeakers < constraints.minSpeakers,
+            trainingEmbeddings.count >= constraints.minSpeakers
+        {
+            logger.info(
+                "Output has \(outputSpeakers) speaker(s), fewer than the minimum \(constraints.minSpeakers); re-clustering with K-Means"
+            )
+            let (_, forcedCentroids) = KMeansClustering.clusterWithCentroids(
+                embeddings: trainingEmbeddings,
+                numClusters: constraints.minSpeakers,
+                maxIterations: 100,
+                seed: KMeansClustering.defaultSeed,
+                restarts: KMeansClustering.defaultRestarts
+            )
+            centroids = forcedCentroids
+            assignments = assignEmbeddings(
+                embeddingFeatures: embeddingFeatures,
+                centroids: centroids
+            )
+            segments = reconstruction.buildSegments(
+                segmentation: segmentation,
+                hardClusters: buildChunkAssignments(
+                    segmentation: segmentation,
+                    timedEmbeddings: timedEmbeddings,
+                    assignments: assignments,
+                    clusterCount: centroids.count
+                ),
+                centroids: centroids
+            )
+        }
 
         let clusteringTime = Date().timeIntervalSince(clusteringStart)
         if !assignments.isEmpty {
@@ -304,13 +347,6 @@ public final class OfflineDiarizerManager {
         } else {
             logger.debug("Clustering completed in \(clusteringTime)s with no assignments")
         }
-
-        let reconstruction = OfflineReconstruction(config: config)
-        let segments = reconstruction.buildSegments(
-            segmentation: segmentation,
-            hardClusters: chunkAssignments,
-            centroids: centroids
-        )
 
         let speakerDatabase = reconstruction.buildSpeakerDatabase(segments: segments)
 
@@ -424,26 +460,35 @@ public final class OfflineDiarizerManager {
         )
     }
 
-    private func selectTrainingEmbeddings(
+    func selectTrainingEmbeddings(
         timedEmbeddings: [TimedEmbedding]
     ) -> [Int] {
         var selected: [Int] = []
         selected.reserveCapacity(timedEmbeddings.count)
+
+        var finite: [Int] = []
+        finite.reserveCapacity(timedEmbeddings.count)
 
         for (index, embedding) in timedEmbeddings.enumerated() {
             let hasNaN = embedding.embedding256.contains { $0.isNaN || $0.isInfinite }
             if hasNaN {
                 continue
             }
-
-            selected.append(index)
+            finite.append(index)
+            // GuLP fork: pyannote trains on speakers active for at least 20% of the
+            // window; the rest are assigned to the clusters these make.
+            if embedding.cleanActiveRatio >= TimedEmbedding.minTrainingActiveRatio {
+                selected.append(index)
+            }
         }
 
-        if selected.isEmpty {
-            return Array(timedEmbeddings.indices)
+        if !selected.isEmpty {
+            return selected
         }
-
-        return selected
+        if !finite.isEmpty {
+            return finite
+        }
+        return Array(timedEmbeddings.indices)
     }
 
     private func computeCentroids(

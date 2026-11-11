@@ -707,7 +707,9 @@ struct VBxClustering {
         let (kmeansClusters, centroids) = KMeansClustering.clusterWithCentroids(
             embeddings: trainingEmbeddings,
             numClusters: targetCount,
-            maxIterations: 100
+            maxIterations: 100,
+            seed: KMeansClustering.defaultSeed,
+            restarts: KMeansClustering.defaultRestarts
         )
 
         return VBxOutput(

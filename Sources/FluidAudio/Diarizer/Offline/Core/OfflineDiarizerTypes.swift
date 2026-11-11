@@ -615,6 +615,12 @@ struct TimedEmbedding: Sendable {
     let endTime: Double
     let embedding256: [Float]
     let rho128: [Double]
+    /// GuLP fork: the share of the window this speaker is active without overlap.
+    let cleanActiveRatio: Float
+
+    /// pyannote's `min_active_ratio`: speakers active for less of the window
+    /// don't train the clustering, but are still assigned to a cluster.
+    static let minTrainingActiveRatio: Float = 0.2
 }
 
 // MARK: - Convenience Methods
