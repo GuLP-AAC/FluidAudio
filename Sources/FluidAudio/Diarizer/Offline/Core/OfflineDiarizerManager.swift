@@ -281,22 +281,26 @@ public final class OfflineDiarizerManager {
         if centroids.isEmpty {
             centroids = computeFallbackCentroids(from: embeddingFeatures)
         }
-        var assignments = assignEmbeddings(
-            embeddingFeatures: embeddingFeatures,
-            centroids: centroids
-        )
-
         let reconstruction = OfflineReconstruction(config: config)
-        var segments = reconstruction.buildSegments(
-            segmentation: segmentation,
-            hardClusters: buildChunkAssignments(
+        // Every embedding goes to its nearest centroid, and the segments follow.
+        func reconstruct(_ centroids: [[Double]]) -> (assignments: [Int], segments: [TimedSpeakerSegment]) {
+            let assignments = assignEmbeddings(
+                embeddingFeatures: embeddingFeatures,
+                centroids: centroids
+            )
+            let segments = reconstruction.buildSegments(
                 segmentation: segmentation,
-                timedEmbeddings: timedEmbeddings,
-                assignments: assignments,
-                clusterCount: centroids.count
-            ),
-            centroids: centroids
-        )
+                hardClusters: buildChunkAssignments(
+                    segmentation: segmentation,
+                    timedEmbeddings: timedEmbeddings,
+                    assignments: assignments,
+                    clusterCount: centroids.count
+                ),
+                centroids: centroids
+            )
+            return (assignments, segments)
+        }
+        var (assignments, segments) = reconstruct(centroids)
 
         // GuLP fork: the speaker-count floor is checked against the clusters VBx
         // starts from, not the voices it ends with. VBx can fold one speaker into
@@ -320,20 +324,32 @@ public final class OfflineDiarizerManager {
                 restarts: KMeansClustering.defaultRestarts
             )
             centroids = forcedCentroids
-            assignments = assignEmbeddings(
-                embeddingFeatures: embeddingFeatures,
-                centroids: centroids
-            )
-            segments = reconstruction.buildSegments(
-                segmentation: segmentation,
-                hardClusters: buildChunkAssignments(
-                    segmentation: segmentation,
-                    timedEmbeddings: timedEmbeddings,
-                    assignments: assignments,
-                    clusterCount: centroids.count
-                ),
-                centroids: centroids
-            )
+            (assignments, segments) = reconstruct(centroids)
+        }
+
+        // GuLP fork: hold the known speaker's centroid at their enrollment (see
+        // `AnchoredCentroids`). Kept only if no voice falls below the floor.
+        if let anchor = config.clustering.anchorEmbedding {
+            if anchor.count != embeddingFeatures.first?.count {
+                logger.warning("Anchor has \(anchor.count) values, embeddings have \(embeddingFeatures.first?.count ?? 0); not anchoring")
+            } else if let anchored = AnchoredCentroids.refine(
+                centroids: centroids,
+                trainingEmbeddings: trainingEmbeddings,
+                anchor: anchor.map(Double.init)
+            ) {
+                let result = reconstruct(anchored)
+                let before = Set(segments.map(\.speakerId)).count
+                let after = Set(result.segments.map(\.speakerId)).count
+                if after >= min(constraints?.minSpeakers ?? 1, before) {
+                    logger.info("Anchored the known speaker: \(before) speaker(s) before, \(after) after")
+                    centroids = anchored
+                    (assignments, segments) = result
+                } else {
+                    logger.info("Anchoring left \(after) speaker(s), under the floor; keeping \(before)")
+                }
+            } else {
+                logger.info("No centroid matches the anchor; not anchoring")
+            }
         }
 
         let clusteringTime = Date().timeIntervalSince(clusteringStart)
