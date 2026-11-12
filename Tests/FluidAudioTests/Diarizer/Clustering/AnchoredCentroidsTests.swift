@@ -46,8 +46,22 @@ final class AnchoredCentroidsTests: XCTestCase {
         for point in known { XCTAssertEqual(nearest(point, refined), 0) }
     }
 
+    /// The enrollment and the session can sound a little different (another
+    /// day, another spot for the iPad). The anchor only steers the split: once
+    /// the other voices are re-learned around it, the known speaker's centroid
+    /// moves to the speech it holds in this session.
+    func testKnownSpeakersCentroidSettlesOnItsSessionSpeech() throws {
+        let known = [8.0, 10, 12].map(vector)
+        let other = [80.0, 90].map(vector)
+        let refined = try XCTUnwrap(
+            AnchoredCentroids.refine(
+                centroids: [vector(20), vector(85)], trainingEmbeddings: known + other, anchor: vector(0)))
+        assertEqual(refined[0], vector(10))
+        assertEqual(refined[1], vector(85))
+    }
+
     func testAnchorPinsTheCentroidItMatchesBest() throws {
-        let points = [0.0, 10, 80, 90].map(vector)
+        let points = [-5.0, 5, 80, 90].map(vector)
         let refined = try XCTUnwrap(
             AnchoredCentroids.refine(centroids: [vector(85), vector(5)], trainingEmbeddings: points, anchor: vector(0)))
         assertEqual(refined[1], vector(0))
@@ -67,7 +81,7 @@ final class AnchoredCentroidsTests: XCTestCase {
     func testCentroidThatLosesEveryEmbeddingKeepsItsPlace() throws {
         let refined = try XCTUnwrap(
             AnchoredCentroids.refine(
-                centroids: [vector(10), vector(20)], trainingEmbeddings: [0.0, 2, 4].map(vector), anchor: vector(0)))
+                centroids: [vector(10), vector(20)], trainingEmbeddings: [-2.0, 0, 2].map(vector), anchor: vector(0)))
         XCTAssertEqual(refined.count, 2)
         assertEqual(refined[0], vector(0))
         assertEqual(refined[1], vector(20))

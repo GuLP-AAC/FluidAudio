@@ -143,9 +143,10 @@ public struct OfflineDiarizerConfig: Sendable {
 
         /// GuLP fork: an embedding enrolled for a speaker known to be in the
         /// recording (same model and space as the extracted embeddings). The
-        /// centroid that matches it is held there while the others are re-learned
-        /// (see `AnchoredCentroids`), so a similar-sounding voice can't pull that
-        /// speaker's centroid over and take its speech. Nil: no anchor.
+        /// centroid that matches it is held there while the others are re-learned,
+        /// then moved once to the speech it holds (see `AnchoredCentroids`), so a
+        /// similar-sounding voice can't pull that speaker's centroid over and take
+        /// its speech. Nil: no anchor.
         public var anchorEmbedding: [Float]? = nil
 
         public static let community = Clustering(

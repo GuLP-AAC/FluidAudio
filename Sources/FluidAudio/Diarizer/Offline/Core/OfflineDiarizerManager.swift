@@ -327,8 +327,9 @@ public final class OfflineDiarizerManager {
             (assignments, segments) = reconstruct(centroids)
         }
 
-        // GuLP fork: hold the known speaker's centroid at their enrollment (see
-        // `AnchoredCentroids`). Kept only if no voice falls below the floor.
+        // GuLP fork: re-learn the other voices around the known speaker's
+        // enrollment (see `AnchoredCentroids`). Kept only if no voice falls below
+        // the floor.
         if let anchor = config.clustering.anchorEmbedding {
             if anchor.count != embeddingFeatures.first?.count {
                 logger.warning("Anchor has \(anchor.count) values, embeddings have \(embeddingFeatures.first?.count ?? 0); not anchoring")
