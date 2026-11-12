@@ -16,9 +16,7 @@ import Foundation
 /// session. A centroid left at the enrollment gives some of that speaker's own
 /// speech to the other voice. Moving it once to the mean of what it holds
 /// fits it to the session without letting it drift again, since drifting is
-/// the repeated re-learning the pin replaced. On the 68 harness sessions this
-/// kept the known speaker's mislabeled speech near the unanchored level while
-/// cutting the other voice's speech taken by the known speaker by 37%.
+/// the repeated re-learning the pin replaced.
 ///
 /// All comparisons are cosine similarities, so vector lengths don't matter.
 enum AnchoredCentroids {
@@ -30,6 +28,46 @@ enum AnchoredCentroids {
 
     /// Stops a re-estimation that keeps moving points back and forth.
     static let maxIterations = 50
+
+    /// What anchoring did to a clustering.
+    enum Outcome<Output> {
+        /// Use these centroids and the output rebuilt from them, which has
+        /// `voices` voices.
+        case anchored(centroids: [[Double]], output: Output, voices: Int)
+        /// Keep the clustering as it was, for the reason given.
+        case skipped(reason: String)
+    }
+
+    /// Anchors `centroids` (see `refine`) and rebuilds the output from them with
+    /// `reconstruct`. The result is kept only if it has at least `voicesBefore`
+    /// voices, counted by `voices`: re-learning around the anchor can leave a
+    /// third voice (a parent, an aide) without speech, and folding it into
+    /// another voice would mislabel it. Skipped, without rebuilding, when the
+    /// anchor's length isn't the embeddings' (another model's space) or it
+    /// matches no centroid.
+    static func apply<Output>(
+        anchor: [Double],
+        centroids: [[Double]],
+        trainingEmbeddings: [[Double]],
+        voicesBefore: Int,
+        reconstruct: ([[Double]]) -> Output,
+        voices: (Output) -> Int
+    ) -> Outcome<Output> {
+        let dimensions = centroids.first?.count ?? 0
+        guard anchor.count == dimensions else {
+            return .skipped(reason: "Anchor has \(anchor.count) values, embeddings have \(dimensions); not anchoring")
+        }
+        guard let anchored = refine(centroids: centroids, trainingEmbeddings: trainingEmbeddings, anchor: anchor)
+        else {
+            return .skipped(reason: "No centroid matches the anchor; not anchoring")
+        }
+        let output = reconstruct(anchored)
+        let after = voices(output)
+        guard after >= voicesBefore else {
+            return .skipped(reason: "Anchoring left \(after) voice(s) of \(voicesBefore); not anchoring")
+        }
+        return .anchored(centroids: anchored, output: output, voices: after)
+    }
 
     /// The centroids with the one closest to `anchor` replaced by it and the
     /// others re-estimated (the mean of the training embeddings nearest each)

@@ -328,28 +328,23 @@ public final class OfflineDiarizerManager {
         }
 
         // GuLP fork: re-learn the other voices around the known speaker's
-        // enrollment (see `AnchoredCentroids`). Kept only if no voice falls below
-        // the floor.
+        // enrollment (see `AnchoredCentroids`). Kept only if no voice is lost.
         if let anchor = config.clustering.anchorEmbedding {
-            if anchor.count != embeddingFeatures.first?.count {
-                logger.warning("Anchor has \(anchor.count) values, embeddings have \(embeddingFeatures.first?.count ?? 0); not anchoring")
-            } else if let anchored = AnchoredCentroids.refine(
+            let outcome = AnchoredCentroids.apply(
+                anchor: anchor.map(Double.init),
                 centroids: centroids,
                 trainingEmbeddings: trainingEmbeddings,
-                anchor: anchor.map(Double.init)
-            ) {
-                let result = reconstruct(anchored)
-                let before = Set(segments.map(\.speakerId)).count
-                let after = Set(result.segments.map(\.speakerId)).count
-                if after >= min(constraints?.minSpeakers ?? 1, before) {
-                    logger.info("Anchored the known speaker: \(before) speaker(s) before, \(after) after")
-                    centroids = anchored
-                    (assignments, segments) = result
-                } else {
-                    logger.info("Anchoring left \(after) speaker(s), under the floor; keeping \(before)")
-                }
-            } else {
-                logger.info("No centroid matches the anchor; not anchoring")
+                voicesBefore: Set(segments.map(\.speakerId)).count,
+                reconstruct: reconstruct,
+                voices: { Set($0.segments.map(\.speakerId)).count }
+            )
+            switch outcome {
+            case .anchored(let anchored, let output, let voices):
+                logger.info("Anchored the known speaker; \(voices) speaker(s)")
+                centroids = anchored
+                (assignments, segments) = output
+            case .skipped(let reason):
+                logger.info("\(reason)")
             }
         }
 

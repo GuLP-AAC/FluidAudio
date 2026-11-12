@@ -91,10 +91,58 @@ final class AnchoredCentroidsTests: XCTestCase {
     func testAnchorLengthDoesNotMatter() throws {
         let points = [0.0, 3, 50, 60, 70].map(vector)
         let unit = try XCTUnwrap(
-            AnchoredCentroids.refine(centroids: [vector(25), vector(70)], trainingEmbeddings: points, anchor: vector(0)))
+            AnchoredCentroids.refine(
+                centroids: [vector(25), vector(70)], trainingEmbeddings: points, anchor: vector(0)))
         let long = try XCTUnwrap(
             AnchoredCentroids.refine(
-                centroids: [vector(25), vector(70)], trainingEmbeddings: points, anchor: vector(0).map { $0 * 7 }))
+                centroids: [vector(25), vector(70)], trainingEmbeddings: points,
+                anchor: vector(0).map { $0 * 7 }))
         for (a, b) in zip(unit, long) { assertEqual(a, b) }
+    }
+
+    // MARK: - apply: whether the diarizer keeps the anchored clustering
+
+    /// Rebuilding the output from the anchored centroids, reduced to the number
+    /// of voices it ends with.
+    private func output(voices: Int) -> ([[Double]]) -> Int { { _ in voices } }
+
+    private let centroids = [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]]
+    private let points = [[0.0, 0.1, 1.0], [1.0, 0.1, 0.0]]
+
+    func testAnchoredClusteringIsKeptWhenEveryVoiceSurvives() {
+        let outcome = AnchoredCentroids.apply(
+            anchor: [1, 0, 0], centroids: centroids, trainingEmbeddings: points,
+            voicesBefore: 2, reconstruct: output(voices: 2), voices: { $0 })
+        guard case .anchored(let anchored, let output, let voices) = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertEqual(anchored.count, 2)
+        XCTAssertEqual(output, 2)
+        XCTAssertEqual(voices, 2)
+    }
+
+    /// A parent or aide whose voice wins no speech once the others are
+    /// re-learned would be folded into the SLP or the child: keep the
+    /// clustering from before.
+    func testAnchoredClusteringThatLosesAVoiceIsDropped() {
+        let outcome = AnchoredCentroids.apply(
+            anchor: [1, 0, 0], centroids: centroids + [[0, 1, 0]], trainingEmbeddings: points,
+            voicesBefore: 3, reconstruct: output(voices: 2), voices: { $0 })
+        guard case .skipped = outcome else { return XCTFail("\(outcome)") }
+    }
+
+    /// An enrollment from another embedding model is in another space.
+    func testAnchorOfAnotherLengthIsNotUsed() {
+        var rebuilt = false
+        let outcome = AnchoredCentroids.apply(
+            anchor: [1, 0], centroids: centroids, trainingEmbeddings: points,
+            voicesBefore: 2, reconstruct: { _ in rebuilt = true; return 2 }, voices: { $0 })
+        guard case .skipped = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertFalse(rebuilt)
+    }
+
+    func testAnchorThatMatchesNoVoiceIsNotUsed() {
+        let outcome = AnchoredCentroids.apply(
+            anchor: [0, 1, 0], centroids: centroids, trainingEmbeddings: points,
+            voicesBefore: 2, reconstruct: output(voices: 2), voices: { $0 })
+        guard case .skipped = outcome else { return XCTFail("\(outcome)") }
     }
 }
