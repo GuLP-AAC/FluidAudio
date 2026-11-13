@@ -203,14 +203,25 @@ public struct OfflineDiarizerConfig: Sendable {
         /// during embedding extraction.
         public var exclusiveSegments: Bool
 
+        /// The shortest segment to output. Nil uses `Embedding.minSegmentDurationSeconds`,
+        /// as before this setting existed. That one says how much speech a voiceprint
+        /// needs (1.0 s); used for the output too, it drops every turn under a second
+        /// ("more", "go"). Setting this keeps those turns without changing voiceprints.
+        public var minSegmentDurationSeconds: Double?
+
         public static let community = PostProcessing(
             minGapDurationSeconds: 0.1,
             exclusiveSegments: true
         )
 
-        public init(minGapDurationSeconds: Double, exclusiveSegments: Bool = true) {
+        public init(
+            minGapDurationSeconds: Double,
+            exclusiveSegments: Bool = true,
+            minSegmentDurationSeconds: Double? = nil
+        ) {
             self.minGapDurationSeconds = minGapDurationSeconds
             self.exclusiveSegments = exclusiveSegments
+            self.minSegmentDurationSeconds = minSegmentDurationSeconds
         }
     }
 
@@ -369,6 +380,12 @@ public struct OfflineDiarizerConfig: Sendable {
             )
         }
 
+        if let shortest = postProcessing.minSegmentDurationSeconds, shortest < 0 {
+            throw OfflineDiarizationError.invalidConfiguration(
+                "postProcessing.minSegmentDuration must be >= 0"
+            )
+        }
+
         guard postProcessing.minGapDurationSeconds >= 0 else {
             throw OfflineDiarizationError.invalidConfiguration(
                 "minGapDuration must be >= 0"
@@ -456,6 +473,12 @@ public struct OfflineDiarizerConfig: Sendable {
     public var minSegmentDuration: Double {
         get { embedding.minSegmentDurationSeconds }
         set { embedding.minSegmentDurationSeconds = newValue }
+    }
+
+    /// The shortest segment to output: `PostProcessing.minSegmentDurationSeconds`, or
+    /// the voiceprint minimum when that is unset.
+    public var minOutputSegmentDuration: Double {
+        postProcessing.minSegmentDurationSeconds ?? embedding.minSegmentDurationSeconds
     }
 
     public var minGapDuration: Double {

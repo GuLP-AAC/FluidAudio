@@ -298,7 +298,7 @@ struct OfflineReconstruction {
             }
 
             let duration = adjustedEnd - adjustedStart
-            if duration < Float(config.minSegmentDuration) {
+            if duration < Float(config.minOutputSegmentDuration) {
                 continue
             }
 
@@ -403,7 +403,7 @@ struct OfflineReconstruction {
     private func sanitize(segments: [TimedSpeakerSegment]) -> [TimedSpeakerSegment] {
         var ordered = segments.sorted { $0.startTimeSeconds < $1.startTimeSeconds }
         let minimumDuration = max(
-            Float(config.minSegmentDuration),
+            Float(config.minOutputSegmentDuration),
             Float(config.segmentationMinDurationOn)
         )
         ordered = ordered.filter {
