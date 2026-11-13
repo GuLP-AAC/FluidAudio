@@ -348,6 +348,9 @@ public struct SortformerFeatureLoader {
 
     private var startFeat = 0
 
+    /// How many of the recording's samples are held now.
+    var heldSampleCount: Int { held.count }
+
     public init(config: SortformerConfig, audio: [Float]) {
         self.init(config: config, reader: SortformerRecordingInMemory(audio))
     }
@@ -412,19 +415,17 @@ public struct SortformerFeatureLoader {
         let firstSample = max(from, 0)
         var samples = [Float](repeating: 0, count: firstSample - from)
         samples.append(contentsOf: held[(firstSample - heldFrom)..<(to - heldFrom)])
-        // Preemphasis reaches one sample back.
-        let sampleBefore = firstSample > 0 ? held[firstSample - 1 - heldFrom] : 0
         let (chunkFeatures, _, _) = melSpectrogram.computeFlatTransposed(
-            audio: samples, lastAudioSample: sampleBefore, paddingMode: .prePadded, expectedFrameCount: chunkLength)
+            audio: samples, paddingMode: .prePadded, expectedFrameCount: chunkLength)
 
         startFeat = endFeat
 
-        // Let go of the samples before the next chunk's left context.
-        let nextFrom = max(0, (startFeat - min(lc, startFeat)) * hop - pad - 1)
-        if nextFrom > heldFrom {
-            held.removeFirst(min(held.count, nextFrom - heldFrom))
-            heldFrom = nextFrom
-        }
+        // Let go of the samples before the next chunk's left context. With no left context, a
+        // chunk after the last one would start just past the recording's end: nothing more to drop.
+        let nextFrom = (startFeat - min(lc, startFeat)) * hop - pad
+        let dropped = min(held.count, max(0, nextFrom - heldFrom))
+        held.removeFirst(dropped)
+        heldFrom += dropped
 
         return (chunkFeatures, chunkLength, leftOffset, rightOffset)
     }

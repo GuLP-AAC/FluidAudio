@@ -108,7 +108,7 @@ final class SortformerBoundedLoaderTests: XCTestCase {
         XCTAssertNil(try loader.next())
     }
 
-    /// What bounds the memory: when a chunk is returned, the recording has been read no further
+    /// The recording is read as it is needed: when a chunk is returned, it has been read no further
     /// than that chunk, its right context and one block ahead.
     func testTheLoaderReadsNoFurtherThanTheChunkItReturnsNeeds() throws {
         let config = SortformerConfig.efficientV2_1
@@ -129,6 +129,25 @@ final class SortformerBoundedLoaderTests: XCTestCase {
         }
         XCTAssertEqual(reader.handedOut, samples.count, "the whole recording is read by the end")
         XCTAssertEqual(returned, chunksOfTheWholeSpectrogram(config: config, samples: samples).count)
+    }
+
+    /// What bounds the memory: after every chunk the loader holds no more of the recording than a
+    /// chunk with its contexts and one block, however long the recording is.
+    func testTheLoaderHoldsNoMoreThanAChunkItsContextsAndABlock() throws {
+        let config = SortformerConfig.efficientV2_1
+        let block = 16_000
+        let reader = CountingReader(audio(count: 60 * config.sampleRate), block: block)
+        var loader = SortformerFeatureLoader(config: config, reader: reader)
+
+        let limit = config.chunkMelFrames * config.melStride + AudioMelSpectrogram().nFFT + block
+        var returned = 0
+        while try loader.next() != nil {
+            returned += 1
+            XCTAssertLessThanOrEqual(
+                loader.heldSampleCount, limit,
+                "after chunk \(returned) the loader held \(loader.heldSampleCount) samples")
+        }
+        XCTAssertGreaterThan(returned, 20)
     }
 
     // MARK: - Reading a recording file
@@ -164,16 +183,36 @@ final class SortformerBoundedLoaderTests: XCTestCase {
         let reader = try XCTUnwrap(SortformerRecordingFile(try AVAudioFile(forReading: url), sampleRate: 16_000))
         XCTAssertEqual(reader.expectedSampleCount, expected.count)
         var samples: [Float] = []
-        var reads = 0
         while true {
             let block = try reader.read()
             if block.isEmpty { break }
+            XCTAssertLessThanOrEqual(block.count, 16_000, "no read holds more than a second of the recording")
             samples.append(contentsOf: block)
-            reads += 1
         }
-        XCTAssertEqual(reads, 4, "a second at a time")
         XCTAssertTrue(samples.map(\.bitPattern) == expected.map(\.bitPattern))
         XCTAssertTrue(try reader.read().isEmpty, "the end stays the end")
+    }
+
+    /// A recording cut short on disk (the app was ended while recording) reads as far as the
+    /// converter reads it, or fails as the converter fails.
+    func testAFileCutShortIsReadAsTheConverterReadsIt() throws {
+        let url = try recording(seconds: 3.3, sampleRate: 16_000)
+        let handle = try FileHandle(forWritingTo: url)
+        let size = try handle.seekToEnd()
+        try handle.truncate(atOffset: size - 20_001)
+        try handle.close()
+
+        let expected = try? AudioConverter(sampleRate: 16_000).resampleAudioFile(url)
+        let read: [Float]? = try? {
+            let reader = try XCTUnwrap(SortformerRecordingFile(try AVAudioFile(forReading: url), sampleRate: 16_000))
+            var samples: [Float] = []
+            while true {
+                let block = try reader.read()
+                if block.isEmpty { return samples }
+                samples.append(contentsOf: block)
+            }
+        }()
+        XCTAssertEqual(read?.map(\.bitPattern), expected?.map(\.bitPattern))
     }
 
     func testAFileThatNeedsConvertingIsNotReadDirectly() throws {

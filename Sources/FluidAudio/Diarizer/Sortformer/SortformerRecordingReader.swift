@@ -8,6 +8,10 @@ protocol SortformerRecordingReader {
     mutating func read() throws -> [Float]
 }
 
+/// The most samples one read returns: one second at 16 kHz, which is how
+/// `AudioConverter.resampleAudioFile` reads a file at that rate.
+private let blockSize = 16_000
+
 /// A recording that is already in memory.
 struct SortformerRecordingInMemory: SortformerRecordingReader {
     private let samples: [Float]
@@ -18,7 +22,7 @@ struct SortformerRecordingInMemory: SortformerRecordingReader {
     }
 
     mutating func read() -> [Float] {
-        let end = min(position + SortformerRecordingFile.blockSize, samples.count)
+        let end = min(position + blockSize, samples.count)
         defer { position = end }
         return Array(samples[position..<end])
     }
@@ -28,9 +32,6 @@ struct SortformerRecordingInMemory: SortformerRecordingReader {
 /// time. These are the reads `AudioConverter.resampleAudioFile` makes for such a file, which it
 /// does not resample, so the samples are the same ones.
 final class SortformerRecordingFile: SortformerRecordingReader {
-    /// One second at 16 kHz.
-    static let blockSize = 16_000
-
     /// The length the file reports, for progress. The recording ends where its samples do.
     var expectedSampleCount: Int { Int(file.length) }
 
@@ -42,7 +43,7 @@ final class SortformerRecordingFile: SortformerRecordingReader {
         let format = file.processingFormat
         guard format.sampleRate == Double(sampleRate), format.channelCount == 1,
             format.commonFormat == .pcmFormatFloat32, !format.isInterleaved,
-            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(Self.blockSize))
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(blockSize))
         else { return nil }
         self.file = file
         self.buffer = buffer
@@ -51,8 +52,8 @@ final class SortformerRecordingFile: SortformerRecordingReader {
     func read() throws -> [Float] {
         let remaining = file.length - file.framePosition
         guard remaining > 0 else { return [] }
-        try file.read(into: buffer, frameCount: AVAudioFrameCount(min(AVAudioFramePosition(Self.blockSize), remaining)))
-        guard let samples = buffer.floatChannelData else { return [] }
+        try file.read(into: buffer, frameCount: AVAudioFrameCount(min(AVAudioFramePosition(blockSize), remaining)))
+        guard let samples = buffer.floatChannelData else { throw SortformerError.invalidAudioData }
         return Array(UnsafeBufferPointer(start: samples[0], count: Int(buffer.frameLength)))
     }
 }

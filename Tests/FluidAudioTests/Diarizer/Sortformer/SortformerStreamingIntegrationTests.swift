@@ -173,7 +173,7 @@ final class SortformerStreamingIntegrationTests: XCTestCase {
                 }
             }.value
 
-            XCTAssertTrue(stopped, "processComplete from \(name) ran to the end in a cancelled task")
+            XCTAssertTrue(stopped, "processComplete from \(name) ran to the end in a canceled task")
         }
     }
 
