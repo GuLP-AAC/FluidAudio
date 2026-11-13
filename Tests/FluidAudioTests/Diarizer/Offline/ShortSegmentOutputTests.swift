@@ -72,6 +72,35 @@ final class ShortSegmentOutputTests: XCTestCase {
         XCTAssertEqual(config.minOutputSegmentDuration, 0.3)
     }
 
+    /// The speaker-count floor and the anchor ask how many voices the session has.
+    /// A voice that only made a sub-second sound must not count, or a session that
+    /// collapsed to one voice passes the floor and is never re-clustered.
+    func testVoiceWithOnlyAShortSoundIsNotCountedAsAVoice() {
+        var config = OfflineDiarizerConfig()
+        config.postProcessing.minSegmentDurationSeconds = 0.1
+        let segments = OfflineReconstruction(config: config).buildSegments(
+            segmentation: segmentation(),
+            hardClusters: [[0, 1]],
+            centroids: [[1, 0], [0, 1]]
+        )
+
+        XCTAssertEqual(Set(segments.map(\.speakerId)).count, 2)
+        XCTAssertEqual(OfflineReconstruction(config: config).establishedVoiceCount(in: segments), 1)
+    }
+
+    func testVoiceWithATurnLongEnoughForAVoiceprintIsCounted() {
+        var config = OfflineDiarizerConfig()
+        config.postProcessing.minSegmentDurationSeconds = 0.1
+        config.embedding.minSegmentDurationSeconds = 0.5
+        let segments = OfflineReconstruction(config: config).buildSegments(
+            segmentation: segmentation(),
+            hardClusters: [[0, 1]],
+            centroids: [[1, 0], [0, 1]]
+        )
+
+        XCTAssertEqual(OfflineReconstruction(config: config).establishedVoiceCount(in: segments), 2)
+    }
+
     func testNegativeOutputMinimumIsRejected() {
         var config = OfflineDiarizerConfig()
         config.postProcessing.minSegmentDurationSeconds = -0.1

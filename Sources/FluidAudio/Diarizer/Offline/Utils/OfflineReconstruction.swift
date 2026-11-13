@@ -16,6 +16,15 @@ struct OfflineReconstruction {
         self.config = config
     }
 
+    /// How many voices hold a turn long enough for a voiceprint. The speaker-count
+    /// floor and the anchor count voices with this, not with every speaker in the
+    /// output: once the output keeps turns shorter than that, a voice that only
+    /// made a short sound would otherwise pass for a second speaker.
+    func establishedVoiceCount(in segments: [TimedSpeakerSegment]) -> Int {
+        let shortest = Float(config.minSegmentDuration)
+        return Set(segments.lazy.filter { $0.durationSeconds >= shortest }.map(\.speakerId)).count
+    }
+
     func buildSegments(
         segmentation: SegmentationOutput,
         hardClusters: [[Int]],

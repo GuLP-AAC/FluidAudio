@@ -308,7 +308,7 @@ public final class OfflineDiarizerManager {
         // embeddings that it never wins a frame, and the output then has fewer
         // voices than `minSpeakers` although the check passed. Enforce the floor on
         // the output: re-cluster to `minSpeakers` with seeded K-Means.
-        let outputSpeakers = Set(segments.map(\.speakerId)).count
+        let outputSpeakers = reconstruction.establishedVoiceCount(in: segments)
         if let constraints,
             outputSpeakers < constraints.minSpeakers,
             trainingEmbeddings.count >= constraints.minSpeakers
@@ -334,9 +334,9 @@ public final class OfflineDiarizerManager {
                 anchor: anchor.map(Double.init),
                 centroids: centroids,
                 trainingEmbeddings: trainingEmbeddings,
-                voicesBefore: Set(segments.map(\.speakerId)).count,
+                voicesBefore: reconstruction.establishedVoiceCount(in: segments),
                 reconstruct: reconstruct,
-                voices: { Set($0.segments.map(\.speakerId)).count }
+                voices: { reconstruction.establishedVoiceCount(in: $0.segments) }
             )
             switch outcome {
             case .anchored(let anchored, let output, let voices):
