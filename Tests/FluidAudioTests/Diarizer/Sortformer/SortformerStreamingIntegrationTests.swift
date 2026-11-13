@@ -40,10 +40,10 @@ final class SortformerStreamingIntegrationTests: XCTestCase {
         completeDiarizer.initialize(models: models)
         let expectedTimeline = try completeDiarizer.processComplete(samples)
 
-        XCTAssertLessThanOrEqual(
-            abs(streamingDiarizer.timeline.numFinalizedFrames - expectedTimeline.numFinalizedFrames),
-            1
-        )
+        assertBatchReachesTheEnd(
+            streaming: streamingDiarizer.timeline.numFinalizedFrames,
+            batch: expectedTimeline.numFinalizedFrames,
+            config: config, sampleCount: samples.count)
         XCTAssertEqual(finalChunk?.chunkResult.tentativeFrameCount, 0)
         XCTAssertEqual(finalChunk?.chunkResult.tentativePredictions.count, 0)
         XCTAssertEqual(streamingDiarizer.timeline.numTentativeFrames, 0)
@@ -129,15 +129,60 @@ final class SortformerStreamingIntegrationTests: XCTestCase {
         XCTAssertNotNil(update)
         XCTAssertGreaterThan(diarizer.timeline.numFinalizedFrames, 0)
         XCTAssertEqual(diarizer.timeline.numTentativeFrames, 0)
-        XCTAssertLessThanOrEqual(
-            abs(diarizer.timeline.numFinalizedFrames - referenceTimeline.numFinalizedFrames),
-            1
-        )
+        assertBatchReachesTheEnd(
+            streaming: diarizer.timeline.numFinalizedFrames,
+            batch: referenceTimeline.numFinalizedFrames,
+            config: config, sampleCount: samples.count)
         // Returned update must cover the freshly-finalized frames produced by
         // the call (drained chunks + absorbed trailing tentative).
         XCTAssertEqual(
             update?.chunkResult.finalizedFrameCount,
             diarizer.timeline.numFinalizedFrames
         )
+    }
+
+    func testProcessCompleteStopsWhenItsTaskIsCancelled() async throws {
+        let config = SortformerConfig.default
+        let models: SortformerModels
+        do {
+            models = try await loadModelsForTest(config: config)
+        } catch {
+            throw XCTSkip("Sortformer models unavailable in this environment: \(error)")
+        }
+        let samples = try DiarizationTestFixtures.fixtureAudio(sampleRate: config.sampleRate, limitSeconds: 4.0)
+        let diarizer = SortformerDiarizer(config: config)
+        diarizer.initialize(models: models)
+
+        let stopped = await Task { () -> Bool in
+            // Cancelled before the first chunk: nothing may run.
+            withUnsafeCurrentTask { $0?.cancel() }
+            do {
+                _ = try diarizer.processComplete(samples)
+                return false
+            } catch is CancellationError {
+                return true
+            } catch {
+                return false
+            }
+        }.value
+
+        XCTAssertTrue(stopped, "processComplete ran to the end in a cancelled task")
+    }
+
+    /// The streaming path stops at the last chunk whose right context is whole. A complete
+    /// recording (`processComplete`) goes to its last frame, so it is never behind, never more
+    /// than one chunk and its right context ahead, and its frames span the whole recording.
+    private func assertBatchReachesTheEnd(
+        streaming: Int, batch: Int, config: SortformerConfig, sampleCount: Int,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        XCTAssertGreaterThanOrEqual(batch, streaming, file: file, line: line)
+        XCTAssertLessThanOrEqual(
+            batch - streaming, config.chunkLen + config.chunkRightContext, file: file, line: line)
+        let recordingSeconds = Float(sampleCount) / Float(config.sampleRate)
+        XCTAssertEqual(
+            Float(batch) * config.frameDurationSeconds, recordingSeconds,
+            accuracy: config.frameDurationSeconds,
+            "processComplete stopped before the end of the recording", file: file, line: line)
     }
 }

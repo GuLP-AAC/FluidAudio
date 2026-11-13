@@ -667,6 +667,10 @@ public final class SortformerDiarizer: Diarizer {
             let coreFrames = config.chunkLen * config.subsamplingFactor  // 48 mel frames core
 
             while let (chunkFeatures, chunkLength, leftOffset, rightOffset) = featureProvider.next() {
+                // Stop between chunks when the enclosing Swift task is cancelled (upstream
+                // FluidAudio since 0.18): a long recording is otherwise processed to its end.
+                try Task.checkCancellation()
+
                 // Run main model
                 let output = try models.runMainModel(
                     chunk: chunkFeatures,
