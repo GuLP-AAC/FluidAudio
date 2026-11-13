@@ -1,3 +1,4 @@
+@preconcurrency import AVFoundation
 import Accelerate
 import CoreML
 import Foundation
@@ -609,8 +610,9 @@ public final class SortformerDiarizer: Diarizer {
 
     /// Process a complete audio file from a URL.
     ///
-    /// Reads and resamples the file to ``targetSampleRate``, then delegates to
-    /// ``processComplete(_:finalizeOnCompletion:progressCallback:)``.
+    /// A file that is already mono and at ``targetSampleRate`` is read from disk a second at a
+    /// time, so a recording of any length is processed in the same memory. Any other file is
+    /// converted in memory first, and so held whole, then processed the same way.
     ///
     /// - Parameters:
     ///   - audioFileURL: Path to a WAV, CAF, or other audio file.
@@ -624,9 +626,19 @@ public final class SortformerDiarizer: Diarizer {
         finalizeOnCompletion: Bool = true,
         progressCallback: ((Int, Int, Int) -> Void)? = nil
     ) throws -> DiarizerTimeline {
+        let file = try AVAudioFile(forReading: audioFileURL)
+        if let recording = SortformerRecordingFile(file, sampleRate: config.sampleRate) {
+            return try processCompleteInternal(
+                reading: recording,
+                expectedSampleCount: recording.expectedSampleCount,
+                keepingEnrolledSpeakers: keepSpeakers,
+                finalizeOnCompletion: finalizeOnCompletion,
+                progressCallback: progressCallback
+            )
+        }
+
         let converter = AudioConverter(sampleRate: Double(config.sampleRate))
         let audio = try converter.resampleAudioFile(audioFileURL)
-
         return try processCompleteInternal(
             audio,
             sourceSampleRate: nil,
@@ -644,7 +656,24 @@ public final class SortformerDiarizer: Diarizer {
         progressCallback: ProgressCallback?
     ) throws -> DiarizerTimeline {
         let normalized = try normalizeSamples(samples, sourceSampleRate: sourceSampleRate)
+        return try processCompleteInternal(
+            reading: SortformerRecordingInMemory(normalized),
+            expectedSampleCount: normalized.count,
+            keepingEnrolledSpeakers: keepSpeakers,
+            finalizeOnCompletion: finalizeOnCompletion,
+            progressCallback: progressCallback
+        )
+    }
 
+    /// - Parameter expectedSampleCount: The recording's length, for the progress callback only:
+    ///   the recording ends where `recording` does.
+    private func processCompleteInternal(
+        reading recording: any SortformerRecordingReader,
+        expectedSampleCount: Int,
+        keepingEnrolledSpeakers keepSpeakers: Bool?,
+        finalizeOnCompletion: Bool,
+        progressCallback: ProgressCallback?
+    ) throws -> DiarizerTimeline {
         return try lock.withLock {
             guard let models = _models else {
                 throw SortformerError.notInitialized
@@ -657,7 +686,7 @@ public final class SortformerDiarizer: Diarizer {
             }
             resetBuffersLocked(keepingSpeakers: keepSpeakers)
 
-            var featureProvider = SortformerFeatureLoader(config: self.config, audio: normalized)
+            var featureProvider = SortformerFeatureLoader(config: self.config, reader: recording)
 
             var chunksProcessed = 0
 
@@ -666,7 +695,7 @@ public final class SortformerDiarizer: Diarizer {
 
             let coreFrames = config.chunkLen * config.subsamplingFactor  // 48 mel frames core
 
-            while let (chunkFeatures, chunkLength, leftOffset, rightOffset) = featureProvider.next() {
+            while let (chunkFeatures, chunkLength, leftOffset, rightOffset) = try featureProvider.next() {
                 // Stop between chunks when the enclosing Swift task is cancelled (upstream
                 // FluidAudio since 0.18): a long recording is otherwise processed to its end.
                 try Task.checkCancellation()
@@ -712,8 +741,8 @@ public final class SortformerDiarizer: Diarizer {
                 // processedFrames is in mel frames (after subsampling)
                 // Each mel frame corresponds to melStride samples
                 let processedMelFrames = diarizerChunkIndex * coreFrames
-                let progress = min(processedMelFrames * config.melStride, normalized.count)
-                progressCallback?(progress, normalized.count, chunksProcessed)
+                let progress = min(processedMelFrames * config.melStride, expectedSampleCount)
+                progressCallback?(progress, expectedSampleCount, chunksProcessed)
             }
 
             // Save updated state

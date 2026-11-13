@@ -1,3 +1,4 @@
+@preconcurrency import AVFoundation
 import XCTest
 
 @preconcurrency @testable import FluidAudio
@@ -150,23 +151,105 @@ final class SortformerStreamingIntegrationTests: XCTestCase {
             throw XCTSkip("Sortformer models unavailable in this environment: \(error)")
         }
         let samples = try DiarizationTestFixtures.fixtureAudio(sampleRate: config.sampleRate, limitSeconds: 4.0)
+        let recording = try self.recording(of: samples, sampleRate: Double(config.sampleRate))
         let diarizer = SortformerDiarizer(config: config)
         diarizer.initialize(models: models)
 
-        let stopped = await Task { () -> Bool in
-            // Cancelled before the first chunk: nothing may run.
-            withUnsafeCurrentTask { $0?.cancel() }
-            do {
-                _ = try diarizer.processComplete(samples)
-                return false
-            } catch is CancellationError {
-                return true
-            } catch {
-                return false
-            }
-        }.value
+        let entryPoints: [(String, @Sendable () throws -> DiarizerTimeline)] = [
+            ("samples", { try diarizer.processComplete(samples) }),
+            ("a file", { try diarizer.processComplete(audioFileURL: recording) }),
+        ]
+        for (name, processComplete) in entryPoints {
+            let stopped = await Task { () -> Bool in
+                // Cancelled before the first chunk: nothing may run.
+                withUnsafeCurrentTask { $0?.cancel() }
+                do {
+                    _ = try processComplete()
+                    return false
+                } catch is CancellationError {
+                    return true
+                } catch {
+                    return false
+                }
+            }.value
 
-        XCTAssertTrue(stopped, "processComplete ran to the end in a cancelled task")
+            XCTAssertTrue(stopped, "processComplete from \(name) ran to the end in a cancelled task")
+        }
+    }
+
+    /// A recording file at the model's rate is read from disk a second at a time. Its predictions
+    /// are the ones its samples give when they are all handed over at once, bit for bit.
+    func testProcessCompleteFromAFileGivesThePredictionsItsSamplesGive() async throws {
+        let config = SortformerConfig.default
+        let models: SortformerModels
+        do {
+            models = try await loadModelsForTest(config: config)
+        } catch {
+            throw XCTSkip("Sortformer models unavailable in this environment: \(error)")
+        }
+        let fixture = try DiarizationTestFixtures.fixtureAudio(sampleRate: config.sampleRate, limitSeconds: 9.5)
+        let recording = try self.recording(of: fixture, sampleRate: Double(config.sampleRate))
+        // What the file holds: the fixture as 16-bit samples.
+        let samples = try AudioConverter(sampleRate: Double(config.sampleRate)).resampleAudioFile(recording)
+
+        let fromSamples = SortformerDiarizer(config: config)
+        fromSamples.initialize(models: models)
+        let expected = try fromSamples.processComplete(samples)
+
+        let fromFile = SortformerDiarizer(config: config)
+        fromFile.initialize(models: models)
+        let timeline = try fromFile.processComplete(audioFileURL: recording)
+
+        XCTAssertGreaterThan(expected.numFinalizedFrames, 0)
+        XCTAssertEqual(timeline.numFinalizedFrames, expected.numFinalizedFrames)
+        XCTAssertTrue(
+            timeline.finalizedPredictions.map(\.bitPattern) == expected.finalizedPredictions.map(\.bitPattern),
+            "reading the recording from disk changed the predictions")
+    }
+
+    /// A file that is not at the model's rate is still converted in memory, as before.
+    func testProcessCompleteFromAFileAtAnotherRateConvertsIt() async throws {
+        let config = SortformerConfig.default
+        let models: SortformerModels
+        do {
+            models = try await loadModelsForTest(config: config)
+        } catch {
+            throw XCTSkip("Sortformer models unavailable in this environment: \(error)")
+        }
+        let fixture = try DiarizationTestFixtures.fixtureAudio(sampleRate: 44_100, limitSeconds: 4.0)
+        let recording = try self.recording(of: fixture, sampleRate: 44_100)
+        let samples = try AudioConverter(sampleRate: Double(config.sampleRate)).resampleAudioFile(recording)
+
+        let fromSamples = SortformerDiarizer(config: config)
+        fromSamples.initialize(models: models)
+        let expected = try fromSamples.processComplete(samples)
+
+        let fromFile = SortformerDiarizer(config: config)
+        fromFile.initialize(models: models)
+        let timeline = try fromFile.processComplete(audioFileURL: recording)
+
+        XCTAssertGreaterThan(expected.numFinalizedFrames, 0)
+        XCTAssertTrue(
+            timeline.finalizedPredictions.map(\.bitPattern) == expected.finalizedPredictions.map(\.bitPattern))
+    }
+
+    /// Writes samples to a temporary 16-bit PCM CAF file, as a recorder would.
+    private func recording(of samples: [Float], sampleRate: Double) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sortformer-recording-\(UUID().uuidString).caf")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let settings: [String: Any] = [
+            AVFormatIDKey: Int(kAudioFormatLinearPCM), AVSampleRateKey: sampleRate, AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16, AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsFloatKey: false,
+        ]
+        let file = try AVAudioFile(forWriting: url, settings: settings)
+        let buffer = try XCTUnwrap(
+            AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(samples.count)))
+        buffer.frameLength = AVAudioFrameCount(samples.count)
+        let data = try XCTUnwrap(buffer.floatChannelData)[0]
+        for (index, sample) in samples.enumerated() { data[index] = sample }
+        try file.write(from: buffer)
+        return url
     }
 
     /// The streaming path stops at the last chunk whose right context is whole. A complete

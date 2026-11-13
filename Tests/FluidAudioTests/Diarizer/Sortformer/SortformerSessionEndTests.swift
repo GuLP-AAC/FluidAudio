@@ -13,21 +13,21 @@ final class SortformerSessionEndTests: XCTestCase {
     }
 
     /// The core (new) mel frames each chunk carries, in order.
-    private func coreFrames(config: SortformerConfig, audio: [Float]) -> [Int] {
+    private func coreFrames(config: SortformerConfig, audio: [Float]) throws -> [Int] {
         var loader = SortformerFeatureLoader(config: config, audio: audio)
         var cores: [Int] = []
-        while let (features, _, leftOffset, rightOffset) = loader.next() {
+        while let (features, _, leftOffset, rightOffset) = try loader.next() {
             cores.append(features.count / config.melFeatures - leftOffset - rightOffset)
         }
         return cores
     }
 
-    func testBatchLoaderCoversEveryFrameOfTheRecording() {
+    func testBatchLoaderCoversEveryFrameOfTheRecording() throws {
         for config in [SortformerConfig.fastV2_1, .efficientV2_1, .highContextV2_1] {
             for seconds in [3.1, 5.0, 47.3] {
                 let samples = audio(seconds: seconds)
                 let (_, melFrames, _) = AudioMelSpectrogram().computeFlatTransposed(audio: samples)
-                let cores = coreFrames(config: config, audio: samples)
+                let cores = try coreFrames(config: config, audio: samples)
                 XCTAssertEqual(
                     cores.reduce(0, +), melFrames,
                     "chunk \(config.chunkLen), \(seconds) s: the chunks cover \(cores.reduce(0, +)) of \(melFrames) frames")
@@ -35,18 +35,11 @@ final class SortformerSessionEndTests: XCTestCase {
         }
     }
 
-    func testBatchLoaderCountsTheChunksItReturns() {
-        let config = SortformerConfig.efficientV2_1
-        let samples = audio(seconds: 5.0)
-        let loader = SortformerFeatureLoader(config: config, audio: samples)
-        XCTAssertEqual(loader.numChunks, coreFrames(config: config, audio: samples).count)
-    }
-
-    func testOnlyTheLastChunksGiveUpRightContext() {
+    func testOnlyTheLastChunksGiveUpRightContext() throws {
         let config = SortformerConfig.efficientV2_1
         var loader = SortformerFeatureLoader(config: config, audio: audio(seconds: 9.0))
         var rightOffsets: [Int] = []
-        while let (_, _, _, rightOffset) = loader.next() { rightOffsets.append(rightOffset) }
+        while let (_, _, _, rightOffset) = try loader.next() { rightOffsets.append(rightOffset) }
         let full = config.chunkRightContext * config.subsamplingFactor
         XCTAssertEqual(rightOffsets.last, 0, "the last chunk has nothing after it")
         XCTAssertEqual(rightOffsets.first, full)

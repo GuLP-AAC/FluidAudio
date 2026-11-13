@@ -321,41 +321,75 @@ public struct SortformerStreamingState: Sendable {
     }
 }
 
-// MARK: - Streaming Feature Provider
+// MARK: - Feature Loader for a Complete Recording
 
-/// Feature loader for Sortformer's file processing
-public struct SortformerFeatureLoader: Sendable {
-    public let numChunks: Int
-
+/// Cuts a complete recording into the model's chunks of mel features.
+///
+/// The recording is read forward and each chunk's features are computed from only the samples
+/// that chunk needs, so what is held does not grow with the recording's length: about three
+/// seconds of audio for the two-second chunk model. A mel frame depends only on the window of
+/// samples around it, so the chunks are, bit for bit, the ones the spectrogram of the whole
+/// recording would be cut into.
+public struct SortformerFeatureLoader {
     private let lc: Int
     private let rc: Int
     private let chunkLen: Int
-    private let melFeatures: Int
+    private let hop: Int
+    private let window: Int
 
-    private let featSeq: [Float]
-    private let featLength: Int
-    private let featSeqLength: Int
+    private let melSpectrogram = AudioMelSpectrogram()
+    private var reader: any SortformerRecordingReader
 
-    private var startFeat: Int
-    private var endFeat: Int
+    /// The samples still needed, starting at the recording's sample `heldFrom`.
+    private var held: [Float] = []
+    private var heldFrom = 0
+    /// The recording's length, once the reader has run dry.
+    private var sampleCount: Int?
+
+    private var startFeat = 0
 
     public init(config: SortformerConfig, audio: [Float]) {
+        self.init(config: config, reader: SortformerRecordingInMemory(audio))
+    }
+
+    init(config: SortformerConfig, reader: any SortformerRecordingReader) {
         self.lc = config.chunkLeftContext * config.subsamplingFactor
         self.rc = config.chunkRightContext * config.subsamplingFactor
         self.chunkLen = config.chunkLen * config.subsamplingFactor
-        self.melFeatures = config.melFeatures
-
-        self.startFeat = 0
-        self.endFeat = 0
-        (self.featSeq, self.featLength, self.featSeqLength) = AudioMelSpectrogram().computeFlatTransposed(audio: audio)
-        // Every frame is covered: the last chunk may be shorter than chunkLen (NeMo's
-        // `streaming_feat_loader`, and upstream FluidAudio since 0.18).
-        self.numChunks = (self.featLength + self.chunkLen - 1) / self.chunkLen
+        self.hop = config.melStride
+        self.window = config.melWindow
+        self.reader = reader
     }
 
-    public mutating func next() -> (chunkFeatures: [Float], chunkLength: Int, leftOffset: Int, rightOffset: Int)? {
+    public mutating func next() throws -> (
+        chunkFeatures: [Float], chunkLength: Int, leftOffset: Int, rightOffset: Int
+    )? {
+        // The spectrogram pads the recording by half an FFT on each side, so frame `f` reads the
+        // samples from `f * hop - pad` on.
+        let pad = melSpectrogram.nFFT / 2
+
+        // Read as far as this chunk and a full right context reach, or to the recording's end.
+        let wanted = (startFeat + chunkLen + rc - 1) * hop + pad
+        while sampleCount == nil, heldFrom + held.count < wanted {
+            let block = try reader.read()
+            if block.isEmpty {
+                sampleCount = heldFrom + held.count
+            } else {
+                held.append(contentsOf: block)
+            }
+        }
+
+        // The recording's frames, as the spectrogram of the whole of it counts them. Until the end
+        // is known there are more than this chunk can use.
+        let featLength: Int
+        if let sampleCount {
+            featLength = sampleCount == 0 ? 0 : 1 + (sampleCount + 2 * pad - window) / hop
+        } else {
+            featLength = .max
+        }
+
         // Calculate end of core chunk
-        endFeat = min(startFeat + chunkLen, featLength)
+        let endFeat = min(startFeat + chunkLen, featLength)
 
         // Need at least one core frame
         guard endFeat > startFeat else { return nil }
@@ -369,12 +403,29 @@ public struct SortformerFeatureLoader: Sendable {
 
         let chunkStartFrame = startFeat - leftOffset
         let chunkEndFrame = endFeat + rightOffset
-        let chunkStartIndex = chunkStartFrame * melFeatures
-        let chunkEndIndex = chunkEndFrame * melFeatures
-        let chunkFeatures = Array(featSeq[chunkStartIndex..<chunkEndIndex])
-        let chunkLength = max(min(featSeqLength - startFeat + leftOffset, chunkEndFrame - chunkStartFrame), 0)
+        let chunkLength = chunkEndFrame - chunkStartFrame
+
+        // The padded samples these frames read: zeros before the recording's first sample, and
+        // nothing after its last, which the spectrogram reads as zeros.
+        let from = chunkStartFrame * hop - pad
+        let to = min(heldFrom + held.count, (chunkEndFrame - 1) * hop + pad)
+        let firstSample = max(from, 0)
+        var samples = [Float](repeating: 0, count: firstSample - from)
+        samples.append(contentsOf: held[(firstSample - heldFrom)..<(to - heldFrom)])
+        // Preemphasis reaches one sample back.
+        let sampleBefore = firstSample > 0 ? held[firstSample - 1 - heldFrom] : 0
+        let (chunkFeatures, _, _) = melSpectrogram.computeFlatTransposed(
+            audio: samples, lastAudioSample: sampleBefore, paddingMode: .prePadded, expectedFrameCount: chunkLength)
 
         startFeat = endFeat
+
+        // Let go of the samples before the next chunk's left context.
+        let nextFrom = max(0, (startFeat - min(lc, startFeat)) * hop - pad - 1)
+        if nextFrom > heldFrom {
+            held.removeFirst(min(held.count, nextFrom - heldFrom))
+            heldFrom = nextFrom
+        }
+
         return (chunkFeatures, chunkLength, leftOffset, rightOffset)
     }
 }

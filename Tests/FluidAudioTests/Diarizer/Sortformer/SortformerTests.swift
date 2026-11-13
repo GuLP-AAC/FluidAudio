@@ -19,7 +19,7 @@ final class SortformerTests: XCTestCase {
         var batchChunks: [[Float]] = []
         var featureProvider = SortformerFeatureLoader(config: config, audio: audio)
 
-        while let (chunk, _, _, _) = featureProvider.next() {
+        while let (chunk, _, _, _) = try featureProvider.next() {
             batchChunks.append(chunk)
         }
 
